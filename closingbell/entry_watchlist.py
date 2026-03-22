@@ -16,9 +16,12 @@ def check_pullbacks(watchlist: list[dict], api=None) -> list[dict]:
     - RSI < 60
     """
     hits = []
+    seen_codes = set()  # 중복 제거
 
     for item in watchlist:
         code = item.get("code", "")
+        if code in seen_codes:
+            continue
         name = item.get("name", code)
 
         df = _load_ohlcv(code)
@@ -49,16 +52,30 @@ def check_pullbacks(watchlist: list[dict], api=None) -> list[dict]:
         rsi = _calc_rsi(df)
 
         if (ma5_touch or ma8_touch or ma33_touch) and vol_dryup and rsi < 60:
+            seen_codes.add(code)
             support_line = ma33 if ma33_touch else (ma8 if ma8_touch else ma5)
+
+            # 눌림목 전용 진입가/손절/목표 (차트엔진 값 대신 현재 상황 기반)
+            pb_entry = round(support_line * 1.005, 0)    # 지지선 살짝 위에서 진입
+            pb_stop = round(support_line * 0.97, 0)      # 지지선 -3%
+            pb_target = round(current * 1.05, 0)         # 현재가 +5%
+            # 이전 20일 고점이 더 높으면 그걸 목표로
+            high_20d = df["high"].tail(20).max()
+            if high_20d > pb_target:
+                pb_target = round(high_20d * 0.98, 0)
+
             hits.append({
                 "code": code, "name": name,
                 "current_price": current,
                 "support_line": round(support_line, 0),
                 "vol_ratio_pct": round(last["volume"] / vol_ma20 * 100, 0) if vol_ma20 > 0 else 0,
                 "rsi": round(rsi, 1),
+                "entry_price": pb_entry,
+                "stop_loss": pb_stop,
+                "target_price": pb_target,
+                "grade": item.get("grade", ""),
                 "score": item.get("score", 0),
                 "note": item.get("note", ""),
-                **item,  # 기존 watchlist 필드 유지
             })
 
     # 점수순 TOP3

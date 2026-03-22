@@ -62,13 +62,17 @@ class ChartEngine:
         gc_ago = self._gc_days_ago(df)
         score, reasons = self._score_breakdown(df, signals, alignment, rsi, gc_ago)
 
-        # 진입가/손절가/목표가 (v1.1: chart에서 계산)
+        # 진입가/손절가/목표가 (v2: 목표가 > 진입가 보장)
         last = df.iloc[-1]
         ma8 = df["close"].rolling(8).mean().iloc[-1]
         ma33 = df["close"].rolling(33).mean().iloc[-1]
         entry = round(max(ma8, ma33) * 1.01, 0) if ma33 > 0 else None
         stop = round(ma33 * 0.97, 0) if ma33 > 0 else None
         target = round(resistance * 0.98, 0) if resistance > 0 else None
+
+        # 목표가가 진입가보다 낮으면 진입가 +5% (손익비 보장)
+        if entry and target and target <= entry:
+            target = round(entry * 1.05, 0)
 
         return ChartResult(
             code=code, score=score, signal_family=signals,

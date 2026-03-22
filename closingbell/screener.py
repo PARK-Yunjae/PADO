@@ -52,8 +52,8 @@ class CBScreener:
         if not self.api:
             return []
         try:
-            ranks = self.api.get_trading_value_rank(market="000", count=150)
-            return ranks if ranks else []
+            ranks = self.api.get_trading_value_rank(market="000")
+            return ranks[:150] if ranks else []
         except Exception as e:
             logger.error(f"유니버스 조회 실패: {e}")
             return []

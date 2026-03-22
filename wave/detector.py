@@ -43,6 +43,10 @@ class WaveDetector:
                 if w2:
                     signals.append(w2)
 
+                w3 = self._detect_wave3(code, df, date)
+                if w3:
+                    signals.append(w3)
+
             except Exception as e:
                 logger.debug(f"파동 스캔 실패 {code}: {e}")
 
@@ -205,6 +209,70 @@ class WaveDetector:
 
         return WaveSignal(
             code=code, name=name, wave_type="wave2",
+            detect_date=date, strength=round(strength, 2),
+            wave_count=wave_count, obv_bull=obv_bull, gge=gge,
+            reasons=reasons,
+        )
+
+    # ─────────────────────────────────────
+    # 3차 파동: 약화 (이전 파동 경험 종목의 반복)
+    # ─────────────────────────────────────
+
+    def _detect_wave3(self, code: str, df: pd.DataFrame, date: str) -> WaveSignal | None:
+        """
+        3차 파동 (약화):
+        ① 이전에 wave1 또는 wave2가 2회 이상 감지된 종목
+        ② 거래량 2배+ 폭발 (1차/2차보다 약한 기준)
+        ③ RSI 30~60
+        ④ 강도가 이전보다 약함 → 주의 신호
+        
+        성호전자 사례: 1차→2차→3차로 점점 약해지는 패턴
+        """
+        # ① 이전 파동 2회 이상
+        prev_w1 = storage.get_wave_count(code, "wave1")
+        prev_w2 = storage.get_wave_count(code, "wave2")
+        total_prev = prev_w1 + prev_w2
+        if total_prev < 2:
+            return None
+
+        # 이미 이번 날짜에 w1/w2가 감지되었으면 스킵
+        # (w3는 w1/w2가 안 걸릴 때만)
+
+        last = df.iloc[-1]
+        vol_ma20 = df["volume"].rolling(20).mean().iloc[-1]
+        if vol_ma20 <= 0:
+            return None
+
+        # ② 2배+ 폭발 (1차=3배, 2차=3배보다 낮은 기준)
+        explosion = last["volume"] / vol_ma20
+        if explosion < 2.0:
+            return None
+
+        # ③ RSI 30~60
+        rsi = self._calc_rsi(df)
+        if rsi < 30 or rsi > 60:
+            return None
+
+        gge = self._check_gge(df)
+        obv_bull = self._check_obv_divergence(df)
+
+        # 강도 (약화 반영: 기본 0.2~0.5 범위)
+        strength = min(0.5, (explosion / 10) * 0.3 + (0.1 if obv_bull else 0) + (0.1 if gge else 0))
+
+        wave_count = total_prev + 1  # 3차, 4차, ...
+        stock = get_stock(code)
+        name = stock.name if stock else code
+
+        reasons = [
+            f"이전 파동 {total_prev}회 감지",
+            f"폭발 {explosion:.1f}배 (약화)",
+            f"RSI {rsi:.0f}",
+        ]
+        if gge:
+            reasons.append("거감음봉")
+
+        return WaveSignal(
+            code=code, name=name, wave_type="wave3",
             detect_date=date, strength=round(strength, 2),
             wave_count=wave_count, obv_bull=obv_bull, gge=gge,
             reasons=reasons,

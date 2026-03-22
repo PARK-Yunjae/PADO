@@ -27,7 +27,7 @@ class OHLCVRow:
 class WaveSignal:
     code: str
     name: str
-    wave_type: str        # wave1 / wave2
+    wave_type: str        # wave1 / wave2 / wave3
     detect_date: str
     strength: float       # 0~1
     wave_count: int       # 몇 번째 파동 (약화 판정용)

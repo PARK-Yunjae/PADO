@@ -54,14 +54,13 @@ class App:
         logger.info("── 08:30 아침 브리핑 ──")
 
         from jaechageosi.signal_book import SignalBook
-        from jaechageosi.market_engine import MarketEngine
+        from jaechageosi.result_types import MarketResult
         from jaechageosi.formatter import format_morning_scan, format_wave_alert
 
         book = SignalBook()
-        market_engine = MarketEngine(api=self.api)
 
-        # 시황 판단
-        market = market_engine.evaluate(self._today)
+        # 시황: DB에서 저장된 값 읽기 (파이프라인에서 이미 계산됨)
+        market = self._load_market_from_db()
 
         # 어제 스캔 결과 + 감시 중
         data = book.get_morning_candidates(self._today)
@@ -74,7 +73,6 @@ class App:
         # 🌊 파동 알림 (있으면)
         waves = storage.get_wave_signals(self._today)
         if not waves:
-            # 전일 파동도 확인
             from datetime import timedelta
             yesterday = (date.today() - timedelta(days=1)).isoformat()
             waves = storage.get_wave_signals(yesterday)
@@ -85,13 +83,38 @@ class App:
             self.notifier.send_pado([embed_wave])
             logger.info(f"🌊 파동 알림: {len(waves)}건")
 
-        # 시황 DB 저장
-        storage.save_market_daily({
-            "date": self._today, "mode": market.mode,
-            "leading_themes": market.leading_themes,
-            "nasdaq_chg": market.nasdaq_change,
-            "dangerous": market.dangerous, "score": market.score,
-        })
+    def _load_market_from_db(self):
+        """DB에서 가장 최근 시황 읽기. 없으면 실시간 평가."""
+        import json as _json
+        from jaechageosi.result_types import MarketResult
+        try:
+            import sqlite3
+            from config import APP_DB_PATH
+            conn = sqlite3.connect(str(APP_DB_PATH))
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM market_daily ORDER BY date DESC LIMIT 1"
+            ).fetchone()
+            conn.close()
+            if row:
+                themes = _json.loads(row["leading_themes"]) if row["leading_themes"] else []
+                return MarketResult(
+                    date=row["date"], score=row["score"] or 0,
+                    mode=row["mode"] or "mixed",
+                    leading_themes=themes,
+                    dangerous=bool(row["dangerous"]),
+                    nasdaq_change=row["nasdaq_chg"] or 0.0,
+                    kospi_ma20_gap=0.0,
+                    seasonal_note="",
+                    reasons=[f"DB 저장값 ({row['date']})"],
+                )
+        except Exception as e:
+            logger.debug(f"시황 DB 읽기 실패: {e}")
+
+        # 폴백: 실시간 평가 (캐시 없어도 키움만으로)
+        from jaechageosi.market_engine import MarketEngine
+        engine = MarketEngine(api=self.api)
+        return engine.evaluate(self._today)
 
     # ─────────────────────────────────────
     # 14:00 장중 눌림목 체크
@@ -328,6 +351,18 @@ class App:
             pass
         return True
 
+    def run_morning(self):
+        """아침 자동 실행 (08:25 트리거용).
+        거래일: 브리핑 웹훅 (전일 결과)
+        주말/공휴일: 뉴스 수집 + 글로벌 갱신
+        """
+        if self._is_trading_day():
+            logger.info("=== 거래일 아침 — 브리핑 ===")
+            self.run_morning_briefing()
+        else:
+            logger.info("=== 비거래일 — 뉴스 수집 ===")
+            self.run_weekend()
+
     def run_once(self):
         """전체 파이프라인 1회 실행 (거래일 자동 판단)."""
         if self._is_trading_day():
@@ -390,36 +425,84 @@ class App:
         logger.info("=== 비거래일 종료 ===")
 
     # ─────────────────────────────────────
-    # 스케줄러
+    # 하루 자동 운영 (BAT 1개로 전부)
     # ─────────────────────────────────────
 
-    def run_scheduler(self):
-        """스케줄러 모드 (시간 기반 실행)."""
-        try:
-            import schedule
-            import time
+    def run_daily(self):
+        """하루 전체 자동 운영. 08:25 기동 → 시간별 작업 → 완료 후 종료.
 
-            schedule.every().day.at("08:30").do(self.run_morning_briefing)
-            schedule.every().day.at("14:00").do(self.run_midday_check)
-            schedule.every().day.at("15:00").do(self.run_cb_pick)
-            schedule.every().day.at("15:40").do(self.run_screening_pipeline)
+        거래일:
+          08:25 기동 → 즉시 아침 브리핑
+          14:00 대기 → 장중 눌림목
+          15:00 대기 → ClosingBell TOP3
+          15:35 대기 → 전체 파이프라인
+          ~16:00 → 자동 종료
 
-            logger.info("스케줄러 시작 (08:30/14:00/15:00/15:40)")
-            logger.info("Ctrl+C로 종료")
+        비거래일:
+          08:25 기동 → 뉴스 수집 + 글로벌 → 즉시 종료
+        """
+        import time as _time
+        from datetime import datetime
 
-            def sig_handler(sig, frame):
-                logger.info("스케줄러 종료")
-                sys.exit(0)
+        if not self._is_trading_day():
+            logger.info("=" * 50)
+            logger.info("=== 비거래일 — 뉴스 수집 후 종료 ===")
+            logger.info("=" * 50)
+            self.run_weekend()
+            return
 
-            signal.signal(signal.SIGINT, sig_handler)
+        logger.info("=" * 50)
+        logger.info("=== 거래일 하루 운영 시작 ===")
+        logger.info("=" * 50)
 
-            while True:
-                schedule.run_pending()
-                time.sleep(30)
+        # 작업 스케줄 (시:분, 함수, 설명)
+        tasks = [
+            ("08:25", self.run_morning_briefing, "🔍 아침 브리핑"),
+            ("14:00", self.run_midday_check,     "📍 장중 눌림목"),
+            ("15:00", self.run_cb_pick,           "🎯 ClosingBell TOP3"),
+            ("15:35", self.run_screening_pipeline,"📊 전체 파이프라인"),
+        ]
 
-        except ImportError:
-            logger.error("schedule 패키지 필요: pip install schedule")
-            sys.exit(1)
+        now = datetime.now()
+        executed = set()
+
+        for sched_time, func, label in tasks:
+            h, m = map(int, sched_time.split(":"))
+            target = now.replace(hour=h, minute=m, second=0, microsecond=0)
+
+            # 이미 지난 시간이면 즉시 실행 (늦게 켜진 경우)
+            if datetime.now() > target:
+                if sched_time not in executed:
+                    logger.info(f"\n── [{sched_time}] {label} (지난 시간 — 즉시 실행) ──")
+                    try:
+                        func()
+                    except Exception as e:
+                        logger.error(f"{label} 실패: {e}")
+                    executed.add(sched_time)
+                continue
+
+            # 대기
+            wait = (target - datetime.now()).total_seconds()
+            if wait > 0:
+                logger.info(f"⏳ [{sched_time}] {label} 대기 중... ({wait/60:.0f}분 남음)")
+                while datetime.now() < target:
+                    _time.sleep(30)
+                    # 1분마다 heartbeat
+                    remaining = (target - datetime.now()).total_seconds()
+                    if int(remaining) % 300 < 30:  # 5분마다 로그
+                        logger.info(f"    ⏳ {remaining/60:.0f}분 남음")
+
+            logger.info(f"\n── [{sched_time}] {label} ──")
+            try:
+                func()
+            except Exception as e:
+                logger.error(f"{label} 실패: {e}")
+            executed.add(sched_time)
+
+        logger.info("=" * 50)
+        logger.info("=== 하루 운영 완료 — 종료 ===")
+        logger.info(f"=== 실행된 작업: {len(executed)}개 ===")
+        logger.info("=" * 50)
 
 
 # ─────────────────────────────────────────────
@@ -429,6 +512,7 @@ class App:
 def main():
     parser = argparse.ArgumentParser(description="PADO — 파동매매 + 재차거시 시스템")
     parser.add_argument("--once", action="store_true", help="전체 1회 실행")
+    parser.add_argument("--morning", action="store_true", help="아침 (거래일=브리핑, 주말=뉴스)")
     parser.add_argument("--cb-pick", action="store_true", help="ClosingBell TOP3만")
     parser.add_argument("--scan", action="store_true", help="재차거시 스캔만")
     parser.add_argument("--wave", action="store_true", help="파동 스캔만")
@@ -442,6 +526,8 @@ def main():
 
     if args.test_all:
         app.run_test_all()
+    elif args.morning:
+        app.run_morning()
     elif args.once:
         app.run_once()
     elif args.cb_pick:
@@ -461,7 +547,7 @@ def main():
     elif args.midday:
         app.run_midday_check()
     else:
-        app.run_scheduler()
+        app.run_daily()
 
 
 if __name__ == "__main__":
