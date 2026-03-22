@@ -52,6 +52,12 @@ def _kr(d: dict, key: str, fallback: str = "") -> str:
     return d.get(key, fallback or key)
 
 
+def _build_channel_bar(c: int, v: int, m: int, mk: int, bonus: int, conf: int) -> str:
+    """확신도를 녹색 바로 시각화 (10칸). 🟩=채움 ⬜=빈칸."""
+    filled = max(1, min(10, round(conf / 10)))
+    return "🟩" * filled + "⬜" * (10 - filled)
+
+
 # ─────────────────────────────────────────────
 # 🎯 ClosingBell TOP3
 # ─────────────────────────────────────────────
@@ -62,16 +68,68 @@ def format_cb_pick(picks: list[dict], market_note: str = "") -> dict:
     for i, p in enumerate(picks[:3], 1):
         name = p.get("name", "?")
         code = p.get("code", "")
+        price = p.get("current_price", 0)
+        support = p.get("support_line", 0)
+        entry = p.get("entry_price", 0)
+        stop = p.get("stop_loss", 0)
+        target = p.get("target_price", 0)
         score = p.get("score", 0)
         rsi = p.get("rsi", "-")
-        align = p.get("alignment", "-")
-        note = p.get("note", "")
+
+        txt = f"**{score}점** | RSI {rsi}"
+        if price:
+            txt += f"\n💰 현재가 {price:,.0f}원"
+        if entry and stop:
+            risk = entry - stop if entry > stop else 0
+            reward = target - entry if target > entry else 0
+            rr = reward / risk if risk > 0 else 0
+            txt += f"\n📌 진입: {entry:,.0f} | 🔴 손절: {stop:,.0f} | 🟢 목표: {target:,.0f}"
+            if rr > 0:
+                txt += f"\n손익비 1:{rr:.1f}"
+
         fields_list.append(field(
             f"{i}위 {name} ({code})",
-            f"**{score}점** | RSI {rsi} | {align}\n{note}",
+            txt,
         ))
     return embed("🎯 ClosingBell TOP3", desc, COLOR_GREEN, fields_list,
-                 footer="전일 종가 기준")
+                 footer="CB 감시종목 눌림목 포착")
+
+
+def format_cb_status(watching: list[dict], today_top5: list[dict]) -> dict:
+    """CB 감시 상태 메시지 — 눌림목 없을 때 발송."""
+    desc = "눌림목 대기 중 — 조건 충족 시 알림"
+
+    fields_list = []
+
+    # 오늘 새로 등록된 TOP5
+    if today_top5:
+        lines = []
+        for i, s in enumerate(today_top5[:5], 1):
+            name = s.get("name", "?")
+            score = s.get("score", 0)
+            rsi = s.get("rsi", 0)
+            pool = s.get("pool_type", "")
+            pool_tag = " [C]" if pool == "core" else ""
+            lines.append(f"  {i}. {name} {score}점 RSI {rsi:.0f}{pool_tag}")
+        fields_list.append(field(
+            f"📊 오늘 TOP5 (감시 등록)",
+            "\n".join(lines),
+        ))
+
+    # 전체 감시 중
+    if watching:
+        lines = []
+        for w in watching[:8]:
+            name = w.get("name", "?")
+            added = w.get("added_date", "")[-5:]
+            lines.append(f"  👀 {name} ({added})")
+        fields_list.append(field(
+            f"📋 CB 감시 ({len(watching)}건)",
+            "\n".join(lines),
+        ))
+
+    return embed("🎯 ClosingBell", desc, COLOR_GREEN, fields_list,
+                 footer="눌림목 대기 중")
 
 
 # ─────────────────────────────────────────────
@@ -147,25 +205,27 @@ def format_morning_scan(data: dict, market=None) -> dict:
         tm = r.get("theme_match", 0)
         sy = r.get("synergy", 0)
 
-        # 점수 바 (간이)
-        conf_bar = "🟩" * (conf // 10) + "⬜" * (10 - conf // 10)
+        # 4채널 기여도 바 (10칸)
+        conf_bar = _build_channel_bar(c, v, m, mk, tm + sy, conf)
 
         bonus_parts = []
         if tm > 0:
-            bonus_parts.append(f"🏷️ 테마매칭 +{tm}")
+            bonus_parts.append(f"🏷️ 테마 +{tm}")
         if sy > 0:
             bonus_parts.append(f"⚡ 시너지 +{sy}")
         bonus_str = " ".join(bonus_parts)
 
+        body = (
+            f"{conf_bar}\n"
+            f"{cs} | {fs}\n"
+            f"🟦차{c} 🟩거{v} 🟧재{m} 🔴시{mk}"
+        )
+        if bonus_str:
+            body += f"\n{bonus_str}"
+
         fields_list.append(field(
             f"{icon} {grade}등급 {name} ({code}) — 확신도 {conf}",
-            f"{conf_bar}\n"
-            f"{cs} | {fs}\n"
-            f"차트 {c} · 거래량 {v} · 재료 {m} · 시황 {mk}\n"
-            f"{bonus_str}" if bonus_str else
-            f"{conf_bar}\n"
-            f"{cs} | {fs}\n"
-            f"차트 {c} · 거래량 {v} · 재료 {m} · 시황 {mk}",
+            body,
         ))
 
     # 감시중
@@ -182,7 +242,7 @@ def format_morning_scan(data: dict, market=None) -> dict:
             "\n".join(lines),
         ))
 
-    return embed("🔍 재차거시 브리핑", "", COLOR_BLUE, fields_list,
+    return embed("🔍 재차거시 브리핑", "", COLOR_GREEN, fields_list,
                  footer="전일 파이프라인 결과 기준")
 
 

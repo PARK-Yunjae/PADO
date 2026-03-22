@@ -46,6 +46,27 @@ class App:
         self._today = date.today().isoformat()
 
     # ─────────────────────────────────────
+    # 08:20 아침 뉴스 수집 (v3)
+    # ─────────────────────────────────────
+
+    def _collect_morning_news(self):
+        """📰 아침 뉴스 수집 + 분석 (브리핑 전에 실행)."""
+        logger.info("── 08:20 아침 뉴스 수집 ──")
+
+        try:
+            from checkers.news_intelligence import run_news_collection, run_news_analysis
+            stats = run_news_collection(self._today)
+            logger.info(f"📰 아침 수집: RSS {stats.get('google_rss',0)} + 네이버 {stats.get('naver',0)} = {stats.get('total',0)}건")
+
+            # 델타 감지 + Gemini 분석 (전일 데이터 있을 때만 의미 있음)
+            analysis = run_news_analysis(self._today)
+            if analysis:
+                themes = [t.get("keyword", "") for t in analysis.get("emerging_themes", [])[:3]]
+                logger.info(f"📰 분석: 부상 {themes}, 분위기 {analysis.get('market_mood','?')}")
+        except Exception as e:
+            logger.warning(f"아침 뉴스 수집 실패: {e}")
+
+    # ─────────────────────────────────────
     # 08:30 아침 브리핑
     # ─────────────────────────────────────
 
@@ -82,6 +103,28 @@ class App:
             embed_wave = format_wave_alert(waves)
             self.notifier.send_pado([embed_wave])
             logger.info(f"🌊 파동 알림: {len(waves)}건")
+
+        # 🔮 v3: 뉴스 분석 결과 (부상 키워드)
+        try:
+            analysis = storage.get_news_analysis(self._today)
+            if not analysis:
+                from datetime import timedelta
+                yesterday = (date.today() - timedelta(days=1)).isoformat()
+                analysis = storage.get_news_analysis(yesterday)
+
+            if analysis and analysis.get("emerging"):
+                emerging = analysis["emerging"][:5]
+                gemini = analysis.get("gemini_result", {})
+                emerging_lines = []
+                for e in emerging:
+                    delta_str = e["delta"] if isinstance(e["delta"], str) else f"+{e['delta']}배"
+                    emerging_lines.append(f"  • {e['word']} ({e['today']}건, {delta_str})")
+                if emerging_lines:
+                    mood = gemini.get("market_mood", "")
+                    mood_str = f" | 시장 분위기: {mood}" if mood else ""
+                    logger.info(f"🔮 부상 키워드: {len(emerging_lines)}건{mood_str}")
+        except Exception as e:
+            logger.debug(f"뉴스 분석 조회 실패: {e}")
 
     def _load_market_from_db(self):
         """DB에서 가장 최근 시황 읽기. 없으면 실시간 평가."""
@@ -145,26 +188,52 @@ class App:
     # ─────────────────────────────────────
 
     def run_cb_pick(self):
-        """🎯 형님용 ClosingBell 눌림목 TOP3."""
+        """🎯 ClosingBell — 이전 방식 복원.
+
+        1) 오늘 TOP5 스코어링 → CB 감시 등록 (웹훅 안 보냄)
+        2) CB 감시종목 전체에서 눌림목 체크
+        3) 눌림목 발생한 종목만 🎯 ClosingBell TOP3 웹훅
+        """
         logger.info("── 15:00 ClosingBell ──")
 
         from closingbell.screener import CBScreener
         from closingbell.entry_watchlist import check_pullbacks
         from jaechageosi.formatter import format_cb_pick
 
+        # 1) 스코어링 → 감시 등록만
         screener = CBScreener(api=self.api)
         result = screener.run(date=self._today)
-
-        # TOP5에서 눌림목 체크 → TOP3
         stocks = result.get("stocks", [])
-        picks = check_pullbacks(stocks, api=self.api) if stocks else stocks[:3]
-        if not picks:
-            picks = stocks[:3]
 
-        if picks:
-            embed = format_cb_pick(picks, market_note="")
+        if stocks:
+            saved = storage.save_cb_watch(stocks[:5], self._today)
+            logger.info(f"CB 감시 등록: {saved}건 (오늘 TOP5)")
+
+        # 오래된 감시 만료
+        expired = storage.expire_cb_watch(max_days=10)
+        if expired:
+            logger.info(f"CB 감시 만료: {expired}건")
+
+        # 2) CB 감시종목 전체에서 눌림목 체크
+        cb_watching = storage.get_cb_watching()
+        if not cb_watching:
+            logger.info("CB 감시종목 0건 — 눌림목 체크 스킵")
+            return
+
+        logger.info(f"CB 눌림목 체크: {len(cb_watching)}건 대상")
+        hits = check_pullbacks(cb_watching, api=self.api)
+
+        # 3) 눌림목 발생 시에만 웹훅
+        if hits:
+            embed = format_cb_pick(hits, market_note="")
             self.notifier.send_cb([embed])
-            logger.info(f"🎯 ClosingBell 발송: {len(picks)}건")
+            logger.info(f"🎯 ClosingBell 발송: {len(hits)}건 (눌림목 포착)")
+        else:
+            # 감시 상태 알림
+            from jaechageosi.formatter import format_cb_status
+            embed = format_cb_status(cb_watching, stocks[:5])
+            self.notifier.send_cb([embed])
+            logger.info(f"🎯 CB 감시 상태 발송: {len(cb_watching)}건 대기 중")
 
     # ─────────────────────────────────────
     # 15:40~ 스크리닝 파이프라인
@@ -296,13 +365,32 @@ class App:
             except Exception as e:
                 logger.warning(f"⑪ 주간 실패: {e}")
 
-        # ⑫ v2: 뉴스 수집
+        # ⑫ v3: 뉴스 인텔리전스 수집 (Google RSS + 네이버 확장)
         try:
-            from checkers.news_collector import collect_daily_news
-            count = collect_daily_news(self._today)
-            logger.info(f"⑫ 뉴스 수집: {count}건")
+            from checkers.news_intelligence import run_news_collection
+            news_stats = run_news_collection(self._today)
+            logger.info(f"⑫ 뉴스 수집 v3: {news_stats.get('total', 0)}건 (RSS {news_stats.get('google_rss', 0)} + 네이버 {news_stats.get('naver', 0)})")
         except Exception as e:
-            logger.warning(f"⑫ 뉴스 수집 실패: {e}")
+            logger.warning(f"⑫ 뉴스 v3 실패: {e}")
+            # 폴백: 기존 수집
+            try:
+                from checkers.news_collector import collect_daily_news
+                count = collect_daily_news(self._today)
+                logger.info(f"⑫ 뉴스 레거시 폴백: {count}건")
+            except Exception as e2:
+                logger.warning(f"⑫ 뉴스 수집 전체 실패: {e2}")
+
+        # ⑬ v3: 뉴스 분석 (델타 감지 + Gemini 키워드→종목 추론)
+        try:
+            from checkers.news_intelligence import run_news_analysis
+            analysis = run_news_analysis(self._today)
+            if analysis:
+                themes = [t.get("keyword", "") for t in analysis.get("emerging_themes", [])[:3]]
+                logger.info(f"⑬ 뉴스 분석: 부상 테마 {themes}, 시장 분위기 {analysis.get('market_mood', '?')}")
+            else:
+                logger.info("⑬ 뉴스 분석: 부상 키워드 없음")
+        except Exception as e:
+            logger.warning(f"⑬ 뉴스 분석 실패: {e}")
 
         logger.info("── 파이프라인 종료 ──")
 
@@ -319,11 +407,16 @@ class App:
 
         # ⑫ 뉴스 수집 (매일 필수)
         try:
-            from checkers.news_collector import collect_daily_news
-            count = collect_daily_news(self._today)
-            logger.info(f"⑫ 뉴스 수집: {count}건")
+            from checkers.news_intelligence import run_news_collection
+            news_stats = run_news_collection(self._today)
+            logger.info(f"⑫ 뉴스 수집: {news_stats.get('total', 0)}건")
         except Exception as e:
             logger.warning(f"⑫ 뉴스 수집 실패: {e}")
+            try:
+                from checkers.news_collector import collect_daily_news
+                collect_daily_news(self._today)
+            except Exception:
+                pass
 
         logger.info("── 파이프라인 종료 (조기) ──")
 
@@ -383,6 +476,10 @@ class App:
         logger.info("\n── [15:40] 파이프라인 ──")
         self.run_screening_pipeline()
 
+        # 08:20 아침 뉴스 수집 (v3)
+        logger.info("\n── [08:20] 아침 뉴스 수집 ──")
+        self._collect_morning_news()
+
         # 08:30 아침 브리핑 (전일 결과 + 파동)
         logger.info("\n── [08:30] 아침 브리핑 ──")
         self.run_morning_briefing()
@@ -414,13 +511,19 @@ class App:
         except Exception as e:
             logger.warning(f"글로벌 갱신 실패: {e}")
 
-        # 뉴스 수집 (매일 축적)
+        # 뉴스 수집 (매일 축적, v3 우선)
         try:
-            from checkers.news_collector import collect_daily_news
-            count = collect_daily_news(self._today)
-            logger.info(f"뉴스 수집: {count}건")
+            from checkers.news_intelligence import run_news_collection
+            stats = run_news_collection(self._today)
+            logger.info(f"뉴스 수집 v3: {stats.get('total', 0)}건")
         except Exception as e:
-            logger.warning(f"뉴스 수집 실패: {e}")
+            logger.warning(f"뉴스 v3 실패: {e}")
+            try:
+                from checkers.news_collector import collect_daily_news
+                count = collect_daily_news(self._today)
+                logger.info(f"뉴스 레거시: {count}건")
+            except Exception as e2:
+                logger.warning(f"뉴스 수집 실패: {e2}")
 
         logger.info("=== 비거래일 종료 ===")
 
@@ -429,17 +532,18 @@ class App:
     # ─────────────────────────────────────
 
     def run_daily(self):
-        """하루 전체 자동 운영. 08:25 기동 → 시간별 작업 → 완료 후 종료.
+        """하루 전체 자동 운영. 08:20 기동 → 시간별 작업 → 완료 후 종료.
 
         거래일:
-          08:25 기동 → 즉시 아침 브리핑
+          08:20 기동 → 아침 뉴스 수집 (Google RSS + 네이버)
+          08:25 → 아침 브리핑 (전일 결과 + 부상 키워드)
           14:00 대기 → 장중 눌림목
           15:00 대기 → ClosingBell TOP3
-          15:35 대기 → 전체 파이프라인
+          15:35 대기 → 전체 파이프라인 (뉴스 추가 수집 포함)
           ~16:00 → 자동 종료
 
         비거래일:
-          08:25 기동 → 뉴스 수집 + 글로벌 → 즉시 종료
+          08:20 기동 → 뉴스 수집 + 글로벌 → 즉시 종료
         """
         import time as _time
         from datetime import datetime
@@ -457,6 +561,7 @@ class App:
 
         # 작업 스케줄 (시:분, 함수, 설명)
         tasks = [
+            ("08:20", self._collect_morning_news, "📰 아침 뉴스 수집"),
             ("08:25", self.run_morning_briefing, "🔍 아침 브리핑"),
             ("14:00", self.run_midday_check,     "📍 장중 눌림목"),
             ("15:00", self.run_cb_pick,           "🎯 ClosingBell TOP3"),
@@ -520,6 +625,8 @@ def main():
     parser.add_argument("--midday", action="store_true", help="장중 체크만")
     parser.add_argument("--weekend", action="store_true", help="비거래일 모드 (뉴스+글로벌만)")
     parser.add_argument("--test-all", action="store_true", help="전체 스케줄 테스트 (웹훅 4종 강제 발송)")
+    parser.add_argument("--news", action="store_true", help="뉴스 수집만 (Google RSS + 네이버)")
+    parser.add_argument("--news-analyze", action="store_true", help="뉴스 수집 + 델타 감지 + Gemini 분석")
 
     args = parser.parse_args()
     app = App()
@@ -536,6 +643,23 @@ def main():
         app.run_screening_pipeline()
     elif args.weekend:
         app.run_weekend()
+    elif args.news:
+        from checkers.news_intelligence import run_news_collection
+        stats = run_news_collection(app._today)
+        print(f"뉴스 수집 완료: RSS {stats.get('google_rss',0)} + 네이버 {stats.get('naver',0)} = {stats.get('total',0)}건")
+    elif args.news_analyze:
+        from checkers.news_intelligence import run_news_collection, run_news_analysis
+        stats = run_news_collection(app._today)
+        print(f"수집: {stats.get('total',0)}건")
+        result = run_news_analysis(app._today)
+        if result:
+            for t in result.get("emerging_themes", []):
+                print(f"  🔮 {t.get('keyword','')} → {t.get('chain','')} → 종목: {t.get('stocks',[])}")
+            print(f"  시장 분위기: {result.get('market_mood','?')}")
+            for alert in result.get("risk_alerts", []):
+                print(f"  ⚠️ {alert}")
+        else:
+            print("부상 키워드 없음")
     elif args.wave:
         from wave.detector import WaveDetector
         detector = WaveDetector()

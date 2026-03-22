@@ -228,10 +228,28 @@ class MarketEngine:
         return top3
 
     def _detect_news_themes(self, date: str) -> list[str]:
-        """소스3: 뉴스 DB에서 오늘 키워드 빈도 → 상위 3개."""
+        """소스3: 뉴스 DB에서 오늘 키워드 빈도 → 상위 3개.
+        v3: news_v2 + 델타 감지 우선, 폴백으로 기존 방식."""
+
+        # v3: 뉴스 인텔리전스 우선 시도
+        try:
+            from checkers.news_intelligence import get_news_themes_for_market
+            leading, emerging = get_news_themes_for_market(date)
+            if leading:
+                if emerging:
+                    emerging_words = [e["word"] for e in emerging[:3]]
+                    logger.info(f"뉴스 v3: 주도 {leading}, 부상 {emerging_words}")
+                return leading
+        except Exception as e:
+            logger.debug(f"뉴스 v3 실패, 레거시 폴백: {e}")
+
+        # 폴백: 기존 news_daily 방식
+        return self._detect_news_themes_legacy(date)
+
+    def _detect_news_themes_legacy(self, date: str) -> list[str]:
+        """소스3 레거시: news_daily 키워드 빈도."""
         from shared.theme_taxonomy import NEWS_CANON_MAP
 
-        # 뉴스 키워드 사전
         THEME_KEYWORDS = {
             "반도체": ["반도체", "HBM", "파운드리", "메모리", "DRAM"],
             "2차전지": ["2차전지", "배터리", "양극재", "리튬", "전기차"],

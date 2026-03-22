@@ -119,8 +119,10 @@ def _select_prompt(sector: str) -> str:
 # 공개 API
 # ─────────────────────────────────────────────
 
-def analyze_material(code: str, name: str, dart: dict, news: dict, sector: str = "") -> dict:
-    """Gemini 구조화 분석 → dict. v2: 섹터별 프롬프트."""
+def analyze_material(code: str, name: str, dart: dict, news: dict,
+                     sector: str = "", related_news: str = "",
+                     emerging_keywords: str = "") -> dict:
+    """Gemini 구조화 분석 → dict. v3: 관련 뉴스 + 부상 키워드 추가."""
     dart_summary = "\n".join(dart.get("reasons", ["공시 정보 없음"]))
     news_items = news.get("items", [])
     news_lines = []
@@ -134,6 +136,13 @@ def analyze_material(code: str, name: str, dart: dict, news: dict, sector: str =
     prompt_type = _select_prompt(sector)
     header = _PROMPT_MAP.get(prompt_type, _PROMPT_GENERAL)
 
+    # v3: 관련 뉴스 + 부상 키워드 섹션 추가
+    extra_context = ""
+    if related_news:
+        extra_context += f"\n\n관련 뉴스 (최근 3일, 이 종목이 언급된 기사):\n{related_news}"
+    if emerging_keywords:
+        extra_context += f"\n\n오늘 시장에서 급부상한 관련 키워드: {emerging_keywords}"
+
     prompt = f"""{header}
 
 종목: {name} ({code})
@@ -142,7 +151,7 @@ DART 공시:
 {dart_summary}
 
 뉴스 제목 + 스니펫:
-{news_summary}
+{news_summary}{extra_context}
 {_OUTPUT_FORMAT}"""
 
     raw = _call_gemini(prompt)

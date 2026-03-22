@@ -156,7 +156,7 @@ CREATE TABLE IF NOT EXISTS market_daily (
     created_at      TEXT NOT NULL
 );
 
--- v2: 뉴스 매일 축적
+-- v2: 뉴스 매일 축적 (레거시, 하위 호환)
 CREATE TABLE IF NOT EXISTS news_daily (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     collect_date TEXT NOT NULL,
@@ -166,6 +166,47 @@ CREATE TABLE IF NOT EXISTS news_daily (
     pub_date     TEXT,
     link         TEXT,
     created_at   TEXT NOT NULL
+);
+
+-- v3: CB 감시종목 (이전 ClosingBell 방식: 감시 → 눌림목 시 알림)
+CREATE TABLE IF NOT EXISTS cb_watch_stocks (
+    code        TEXT NOT NULL,
+    name        TEXT,
+    score       REAL,
+    rsi         REAL,
+    alignment   TEXT,
+    pool_type   TEXT,
+    reasons     TEXT,
+    added_date  TEXT NOT NULL,
+    status      TEXT DEFAULT 'watching',
+    UNIQUE(code, added_date)
+);
+
+-- v3: 뉴스 인텔리전스
+CREATE TABLE IF NOT EXISTS news_v2 (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    collect_date    TEXT NOT NULL,
+    source          TEXT NOT NULL,
+    category        TEXT,
+    query           TEXT,
+    title           TEXT NOT NULL,
+    first_sentence  TEXT,
+    snippet         TEXT,
+    link            TEXT,
+    pub_date        TEXT,
+    publisher       TEXT,
+    active_words    TEXT,
+    stock_mentions  TEXT,
+    lang            TEXT DEFAULT 'ko',
+    created_at      TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- v3: 뉴스 분석 결과 (델타 감지 + Gemini)
+CREATE TABLE IF NOT EXISTS news_analysis (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    analysis_date   TEXT NOT NULL,
+    payload         BLOB,
+    created_at      TEXT DEFAULT (datetime('now','localtime'))
 );
 """
 
@@ -178,6 +219,12 @@ CREATE INDEX IF NOT EXISTS idx_jcgs_wl_code ON jcgs_watchlist(code);
 CREATE INDEX IF NOT EXISTS idx_perf_source ON performance(source, signal_date);
 CREATE INDEX IF NOT EXISTS idx_news_date ON news_daily(collect_date);
 CREATE INDEX IF NOT EXISTS idx_news_title ON news_daily(title);
+CREATE INDEX IF NOT EXISTS idx_news_v2_date ON news_v2(collect_date);
+CREATE INDEX IF NOT EXISTS idx_news_v2_category ON news_v2(category);
+CREATE INDEX IF NOT EXISTS idx_news_v2_source ON news_v2(source);
+CREATE INDEX IF NOT EXISTS idx_news_analysis_date ON news_analysis(analysis_date);
+CREATE INDEX IF NOT EXISTS idx_cb_watch_status ON cb_watch_stocks(status);
+CREATE INDEX IF NOT EXISTS idx_cb_watch_date ON cb_watch_stocks(added_date);
 """
 
 
@@ -429,3 +476,125 @@ def get_cb_screen(run_date: str) -> dict | None:
     row = conn.execute("SELECT payload FROM cb_screen_runs WHERE run_date=?", (run_date,)).fetchone()
     conn.close()
     return _decode(row["payload"]) if row else None
+
+
+# ─────────────────────────────────────────────
+# v3: 뉴스 인텔리전스
+# ─────────────────────────────────────────────
+
+def save_news_v2_batch(rows: list[dict]) -> None:
+    """news_v2 일괄 저장."""
+    conn = _connect()
+    try:
+        conn.executemany(
+            """INSERT INTO news_v2
+               (collect_date, source, category, query, title, first_sentence,
+                snippet, link, pub_date, publisher, active_words, stock_mentions, lang)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            [(r["collect_date"], r["source"], r.get("category", ""),
+              r.get("query", ""), r["title"], r.get("first_sentence", ""),
+              r.get("snippet", ""), r.get("link", ""), r.get("pub_date", ""),
+              r.get("publisher", ""),
+              r.get("active_words", "[]"), r.get("stock_mentions", "[]"),
+              r.get("lang", "ko"))
+             for r in rows],
+        )
+        conn.commit()
+    except Exception as e:
+        logger.error(f"save_news_v2_batch 실패: {e}")
+    finally:
+        conn.close()
+
+
+def get_news_v2_by_date(date: str) -> list[dict]:
+    """특정 날짜의 news_v2 조회."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT * FROM news_v2 WHERE collect_date=?", (date,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_news_v2_count(date: str) -> int:
+    """특정 날짜 news_v2 건수."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT COUNT(*) as cnt FROM news_v2 WHERE collect_date=?", (date,)
+    ).fetchone()
+    conn.close()
+    return row["cnt"] if row else 0
+
+
+def save_news_analysis(date: str, payload: dict) -> None:
+    """뉴스 분석 결과 저장 (델타 + Gemini)."""
+    conn = _connect()
+    conn.execute(
+        "INSERT INTO news_analysis (analysis_date, payload) VALUES (?,?)",
+        (date, _encode(payload)),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_news_analysis(date: str) -> dict | None:
+    """뉴스 분석 결과 조회."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT payload FROM news_analysis WHERE analysis_date=? ORDER BY id DESC LIMIT 1",
+        (date,)
+    ).fetchone()
+    conn.close()
+    return _decode(row["payload"]) if row else None
+
+
+# ─────────────────────────────────────────────
+# v3: CB 감시종목 (이전 ClosingBell 방식)
+# ─────────────────────────────────────────────
+
+def save_cb_watch(stocks: list[dict], date: str) -> int:
+    """CB TOP5를 감시종목으로 등록."""
+    conn = _connect()
+    saved = 0
+    for s in stocks:
+        try:
+            conn.execute(
+                """INSERT OR REPLACE INTO cb_watch_stocks
+                   (code,name,score,rsi,alignment,pool_type,reasons,added_date,status)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (s["code"], s.get("name", ""), s.get("score", 0),
+                 s.get("rsi", 0), s.get("alignment", ""),
+                 s.get("pool_type", ""), str(s.get("reasons", [])),
+                 date, "watching"),
+            )
+            saved += 1
+        except Exception as e:
+            logger.debug(f"CB 감시 저장 실패 {s.get('code')}: {e}")
+    conn.commit()
+    conn.close()
+    return saved
+
+
+def get_cb_watching() -> list[dict]:
+    """CB 감시 중인 종목 조회."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT * FROM cb_watch_stocks WHERE status='watching' ORDER BY score DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def expire_cb_watch(max_days: int = 10) -> int:
+    """오래된 CB 감시종목 만료 처리."""
+    conn = _connect()
+    result = conn.execute(
+        """UPDATE cb_watch_stocks SET status='expired'
+           WHERE status='watching'
+           AND julianday('now') - julianday(added_date) > ?""",
+        (max_days,),
+    )
+    conn.commit()
+    expired = result.rowcount
+    conn.close()
+    return expired

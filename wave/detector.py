@@ -35,6 +35,10 @@ class WaveDetector:
                 if df is None or len(df) < 120:
                     continue
 
+                # v3: 좀비주/초소형주 사전 필터
+                if not self._pass_quality_filter(code, df):
+                    continue
+
                 w1 = self._detect_wave1(code, df, date)
                 if w1:
                     signals.append(w1)
@@ -50,7 +54,15 @@ class WaveDetector:
             except Exception as e:
                 logger.debug(f"파동 스캔 실패 {code}: {e}")
 
-        # DB 저장
+        # DB 저장 (기존 당일 데이터 정리 후 새로 저장)
+        try:
+            conn = storage._connect()
+            conn.execute("DELETE FROM wave_signals WHERE detect_date=?", (date,))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
         for s in signals:
             storage.save_wave_signal({
                 "code": s.code, "name": s.name, "wave_type": s.wave_type,
@@ -60,6 +72,38 @@ class WaveDetector:
 
         logger.info(f"파동 스캔 완료: {len(signals)}건 감지")
         return signals
+
+    def _pass_quality_filter(self, code: str, df) -> bool:
+        """v3: 좀비주/초소형주 필터.
+
+        거래대금 일 5억 미만 → 제외 (블루탑 거래량 366주 같은 케이스)
+        시총 추정 100억 미만 → 제외 (나눔테크 87억, 애니메디솔루션 36억)
+        당일 음봉폭발 → 제외 (한주에이알티 -21% 투매성)
+        """
+        last = df.iloc[-1]
+        recent5 = df.tail(5)
+
+        # 거래대금 = 종가 × 거래량 (최근 5일 평균)
+        tv_5d = (recent5["close"] * recent5["volume"]).mean()
+        if tv_5d < 500_000_000:  # 5억
+            return False
+
+        # 시총 추정 = 종가 × 최근 거래량 MA20 × 100 (유통비율 추정)
+        # 정확하지 않지만, 주가 500원 미만 + 거래량 극소 = 초소형주
+        if last["close"] < 500 and last["volume"] < 10000:
+            return False
+
+        # 음봉폭발 제외: 당일 음봉 + 거래량 MA20의 3배+ + 등락률 -10% 이상
+        if len(df) >= 21:
+            vol_ma20 = df["volume"].rolling(20).mean().iloc[-1]
+            is_bearish = last["close"] < last["open"]
+            is_explosion = last["volume"] > vol_ma20 * 3 if vol_ma20 > 0 else False
+            if len(df) >= 2:
+                change = (last["close"] - df.iloc[-2]["close"]) / df.iloc[-2]["close"]
+                if is_bearish and is_explosion and change < -0.10:
+                    return False
+
+        return True
 
     # ─────────────────────────────────────
     # 1차 파동: 바닥 탈출

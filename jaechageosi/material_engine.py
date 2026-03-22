@@ -50,10 +50,28 @@ class MaterialEngine:
             logger.warning(f"뉴스 실패 {name}: {e}")
             news = {"items": [], "summary": "뉴스 조회 실패", "score": 0}
 
-        # 3) Gemini AI (v2: 섹터별 프롬프트)
+        # 3) Gemini AI (v2: 섹터별 프롬프트, v3: 관련 뉴스 + 부상 키워드 추가)
+        related_news_text = ""
+        emerging_text = ""
+        try:
+            from checkers.news_intelligence import get_related_news_for_stock, get_emerging_for_stock
+            related = get_related_news_for_stock(code, name, days=3)
+            if related:
+                lines = [f"- {r['title']}" for r in related[:5]]
+                related_news_text = "\n".join(lines)
+            emerging = get_emerging_for_stock(code, name, sector)
+            if emerging:
+                emerging_text = ", ".join(emerging[:3])
+        except Exception as e:
+            logger.debug(f"뉴스 인텔리전스 조회 실패 {code}: {e}")
+
         try:
             from checkers.ai_analyzer import analyze_material
-            gemini = analyze_material(code, name, dart, news, sector=sector)
+            gemini = analyze_material(
+                code, name, dart, news, sector=sector,
+                related_news=related_news_text,
+                emerging_keywords=emerging_text,
+            )
         except Exception as e:
             logger.warning(f"Gemini 실패 {code}: {e}")
             gemini = self._rule_based_fallback(dart, news)

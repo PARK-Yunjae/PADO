@@ -132,6 +132,13 @@ CB_SCORE_GGE_BONUS   = _env("CB_SCORE_GGE_BONUS", 5.0, float)
 CB_SCORE_OBV_BONUS   = _env("CB_SCORE_OBV_BONUS", 3.0, float)
 CB_OVERHEAT_RSI      = _env("CB_OVERHEAT_RSI", 75.0, float)
 
+# ClosingBell 유니버스
+CB_UNIVERSE_TOP_N    = _env("CB_UNIVERSE_TOP_N", 150, int)
+CB_MIN_PRICE         = _env("CB_MIN_PRICE", 1000, int)
+CB_MAX_PRICE         = _env("CB_MAX_PRICE", 150000, int)
+CB_ETF_KEYWORDS      = ["ETF", "ETN", "KODEX", "TIGER", "KBSTAR", "ARIRANG",
+                        "HANARO", "SOL", "스팩", "SPAC", "리츠"]
+
 # ─────────────────────────────────────────────
 # 재차거시 threshold / 가중치
 # ─────────────────────────────────────────────
