@@ -1,0 +1,6 @@
+pandas>=2.0
+numpy>=1.24
+requests>=2.28
+python-dotenv>=1.0
+schedule>=1.2
+FinanceDataReader>=0.9

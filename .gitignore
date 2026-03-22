@@ -1,0 +1,10 @@
+.venv/
+.env
+data/pado.db
+data/logs/
+data/performance/
+__pycache__/
+*/__pycache__/
+*.pyc
+*.pyo
+.DS_Store
