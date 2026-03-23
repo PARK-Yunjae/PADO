@@ -234,34 +234,13 @@ class CBScreener:
         return (last["volume"] < prev_mean * 0.25 and last["close"] < last["open"])
 
     def _check_obv(self, df):
-        """OBV bull 시그널 (백테스트 모듈J 기반, D+5 46.2%).
-        조건 1: 가격↓ + OBV↑ (다이버전스)
-        조건 2: OBV가 20일 평균 상향 돌파 (골든크로스)
-        """
         import numpy as np
-        if len(df) < 21: return False
-        r = df.tail(21)
-        ps = np.polyfit(range(20), r["close"].iloc[-20:].values, 1)[0]
-        obv_vals = (np.sign(r["close"].diff()) * r["volume"]).cumsum()
-        os_ = np.polyfit(range(len(obv_vals)), obv_vals.values, 1)[0]
-
-        # 조건 1: 다이버전스 (기존)
-        if ps < 0 and os_ > 0:
-            return True
-
-        # 조건 2: OBV 골든크로스 (어제 < MA20, 오늘 >= MA20)
-        obv_full = (np.sign(df["close"].diff()) * df["volume"]).cumsum()
-        obv_ma20 = obv_full.rolling(20).mean()
-        if len(obv_full) >= 2 and len(obv_ma20.dropna()) >= 2:
-            today_obv = obv_full.iloc[-1]
-            today_ma = obv_ma20.iloc[-1]
-            yest_obv = obv_full.iloc[-2]
-            yest_ma = obv_ma20.iloc[-2]
-            if pd.notna(today_ma) and pd.notna(yest_ma):
-                if yest_obv < yest_ma and today_obv >= today_ma:
-                    return True
-
-        return False
+        if len(df) < 20: return False
+        r = df.tail(20)
+        ps = np.polyfit(range(20), r["close"].values, 1)[0]
+        obv = (np.sign(r["close"].diff()) * r["volume"]).cumsum()
+        os_ = np.polyfit(range(len(obv)), obv.values, 1)[0]
+        return ps < 0 and os_ > 0
 
     def _load_ohlcv(self, code):
         p = OHLCV_DIR / f"{code}.csv"

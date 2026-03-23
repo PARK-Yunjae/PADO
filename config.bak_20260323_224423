@@ -137,10 +137,6 @@ CB_UNIVERSE_TOP_N    = _env("CB_UNIVERSE_TOP_N", 150, int)
 CB_MIN_PRICE         = _env("CB_MIN_PRICE", 1000, int)
 CB_MAX_PRICE         = _env("CB_MAX_PRICE", 150000, int)
 CB_ETF_KEYWORDS      = ["ETF", "ETN", "KODEX", "TIGER", "KBSTAR", "ARIRANG",
-
-
-# 코넥스/스팩 제외 (2,661종목→2,547보통주+114우선주, 백테스트 검증)
-EXCLUDED_MARKETS     = {"KONEX"}
                         "HANARO", "SOL", "스팩", "SPAC", "리츠"]
 
 # ─────────────────────────────────────────────

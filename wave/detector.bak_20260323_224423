@@ -27,16 +27,6 @@ class WaveDetector:
         """전종목 파동 스캔 → 시그널 리스트 + DB 저장."""
         signals = []
         codes = list(self.stock_map.keys())
-
-        # 코넥스 제외 (백테스트: 코넥스 종목 유동성 부족, 실매매 불가)
-        try:
-            from config import EXCLUDED_MARKETS
-            codes = [c for c in codes
-                     if self.stock_map.get(c) and
-                     getattr(self.stock_map[c], 'market', '') not in EXCLUDED_MARKETS]
-        except ImportError:
-            pass
-
         logger.info(f"파동 스캔 시작: {len(codes)}종목")
 
         for code in codes:

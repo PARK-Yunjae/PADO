@@ -33,9 +33,3 @@ desktop.ini
 .idea/
 *.swp
 *.swo
-
-# ─── 백테스트 (대용량 결과) ───
-tools/backtest/results/
-tools/backtest/universe_whitelist.csv
-tools/backtest/universe_whitelist_meta.txt
-tools/backtest/*.bak*
