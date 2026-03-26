@@ -20,7 +20,7 @@ from config import (
     PERFORMANCE_DIR,
     PERFORMANCE_TRACK_DAYS,
 )
-from core.storage import (
+from shared.storage import (
     get_buy_picks,
     iter_screen_results,
     list_buy_pick_dates,
@@ -70,7 +70,7 @@ def track_today() -> int:
     """
     Update screening performance for the current trading day using live API prices.
     """
-    from core.kiwoom_api import KiwoomAPI
+    from shared.kiwoom_api import KiwoomAPI
 
     today = datetime.now().strftime("%Y-%m-%d")
     tracking = _load_tracking()
@@ -371,6 +371,3 @@ if __name__ == "__main__":
         print(json.dumps(generate_report(), ensure_ascii=False, indent=2))
     else:
         track_today()
-
-
-

@@ -15,6 +15,25 @@ _GRADE_ORDER = {"A": 0, "B": 1, "C": 2, "REJECT": 3}
 _ACTIONS = {"A": "pullback_entry", "B": "watch", "C": "record_only", "REJECT": "reject"}
 
 
+def _classify_signal_type(chart: ChartResult, volume: VolumeResult) -> tuple[str, str, str]:
+    """(signal_type, recommended_hold_days, strategy_bucket)"""
+    signals = set(chart.signal_family)
+
+    # 파동 + 점수 교집합 (D+J): 백테스트 승률 최상
+    if ("wave1" in signals or "wave2" in signals) and chart.score >= 50:
+        return "wave_plus_score", "D+5", "wave"
+
+    # RSI 반전: 홀드형 (백테스트 D+15~20 최적)
+    if chart.rsi <= 20 or "rsi_reclaim" in signals:
+        return "rsi_reversal", "D+15~20", "hold"
+
+    # OBV bull + 거감음봉: 유목민 완전체에 가까움
+    if volume.obv_bull_div and volume.gge_strict:
+        return "wave_plus_score", "D+5~10", "wave"
+
+    return "score_only", "D+3~5", "pullback"
+
+
 def _min_grade(grade: Grade, cap: Grade) -> Grade:
     if _GRADE_ORDER.get(grade, 3) < _GRADE_ORDER.get(cap, 3):
         return cap
@@ -94,12 +113,18 @@ def intersect(
     )
     confidence = max(0, min(confidence, 100))
 
+    # ── 6. signal_type 분류 (v4.1) ──
+    signal_type, hold_days, strategy_bucket = _classify_signal_type(chart, volume)
+
     return IntersectionResult(
         code=stock.code, name=stock.name,
         grade=grade, confidence=confidence,
         action=_ACTIONS[grade], reject_reason=None,
         chart=chart, volume=volume, material=material, market=market,
         theme_match_bonus=theme_bonus, synergy_bonus=synergy,
+        signal_type=signal_type,
+        recommended_hold_days=hold_days,
+        strategy_bucket=strategy_bucket,
     )
 
 

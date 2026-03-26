@@ -1,4 +1,6 @@
-"""수급 API — 기관/외인 매매 + 공매도."""
+"""수급 API — ⚠️ DEPRECATED (v5에서 미사용)
+volume_engine._check_supply()와 main._verify_pullback()이 직접 처리.
+삭제 예정."""
 
 import time
 from config import API_SLEEP_KIWOOM, setup_logging

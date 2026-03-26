@@ -21,6 +21,10 @@ class SignalBook:
                 "material_score": r.material.score, "market_score": r.market.score,
                 "theme_match": r.theme_match_bonus, "synergy": r.synergy_bonus,
                 "reject_reason": r.reject_reason,
+                # v4.1
+                "signal_type": r.signal_type,
+                "recommended_hold_days": r.recommended_hold_days,
+                "strategy_bucket": r.strategy_bucket,
             }
             sid = storage.save_scan_result(row)
             if sid:
@@ -50,9 +54,21 @@ class SignalBook:
     def get_watching(self) -> list[dict]:
         return storage.get_watching()
 
-    def get_morning_candidates(self, date: str) -> list[dict]:
+    def get_morning_candidates(self, date: str) -> dict:
         """08:30 브리핑용 — 어제 A/B + 진행중 감시."""
+        from datetime import datetime, timedelta
+
         scan = storage.get_scan_results(date)
         watching = storage.get_watching()
+
+        # 오늘 결과 없으면 최근 거래일 fallback
+        if not scan:
+            d = datetime.strptime(date, "%Y-%m-%d").date()
+            for i in range(1, 5):
+                prev = (d - timedelta(days=i)).isoformat()
+                scan = storage.get_scan_results(prev)
+                if scan:
+                    break
+
         ab_scan = [r for r in scan if r.get("grade") in ("A", "B")]
         return {"scan_results": ab_scan, "watching": watching}

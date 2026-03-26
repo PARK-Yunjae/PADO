@@ -89,6 +89,9 @@ CREATE TABLE IF NOT EXISTS jcgs_scan_results (
     theme_match     INTEGER DEFAULT 0,
     synergy         INTEGER DEFAULT 0,
     reject_reason   TEXT,
+    signal_type         TEXT,
+    recommended_hold_days TEXT,
+    strategy_bucket     TEXT,
     payload         BLOB,
     created_at      TEXT NOT NULL,
     UNIQUE(scan_date, code)
@@ -208,6 +211,36 @@ CREATE TABLE IF NOT EXISTS news_analysis (
     payload         BLOB,
     created_at      TEXT DEFAULT (datetime('now','localtime'))
 );
+
+-- v5: 눌림목 시그널 + 3차 검증 결과 (승률 분석용)
+CREATE TABLE IF NOT EXISTS pullback_signals (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_date     TEXT NOT NULL,
+    code            TEXT NOT NULL,
+    name            TEXT,
+    d_plus          INTEGER,
+    explosion_date  TEXT,
+    explosion_ratio REAL,
+    vol_remain_pct  REAL,
+    signal_strength INTEGER,
+    ma_touch        TEXT,
+    is_bearish      INTEGER DEFAULT 0,
+    entry_price     REAL,
+    stop_loss       REAL,
+    target_price    REAL,
+    verdict         TEXT,
+    verify_reasons  TEXT,
+    dart_result     TEXT,
+    short_ratio     REAL,
+    foreign_net     INTEGER,
+    inst_net        INTEGER,
+    d1_return       REAL,
+    d2_return       REAL,
+    d3_return       REAL,
+    d5_return       REAL,
+    created_at      TEXT DEFAULT (datetime('now','localtime')),
+    UNIQUE(signal_date, code)
+);
 """
 
 _INDEXES = """
@@ -225,6 +258,9 @@ CREATE INDEX IF NOT EXISTS idx_news_v2_source ON news_v2(source);
 CREATE INDEX IF NOT EXISTS idx_news_analysis_date ON news_analysis(analysis_date);
 CREATE INDEX IF NOT EXISTS idx_cb_watch_status ON cb_watch_stocks(status);
 CREATE INDEX IF NOT EXISTS idx_cb_watch_date ON cb_watch_stocks(added_date);
+CREATE INDEX IF NOT EXISTS idx_pullback_date ON pullback_signals(signal_date);
+CREATE INDEX IF NOT EXISTS idx_pullback_code ON pullback_signals(code);
+CREATE INDEX IF NOT EXISTS idx_pullback_verdict ON pullback_signals(verdict);
 """
 
 
@@ -233,6 +269,17 @@ def init_storage():
     conn = _connect()
     conn.executescript(_TABLES)
     conn.executescript(_INDEXES)
+
+    # v4.1 마이그레이션: signal_type 컬럼 추가
+    try:
+        conn.execute("SELECT signal_type FROM jcgs_scan_results LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE jcgs_scan_results ADD COLUMN signal_type TEXT")
+        conn.execute("ALTER TABLE jcgs_scan_results ADD COLUMN recommended_hold_days TEXT")
+        conn.execute("ALTER TABLE jcgs_scan_results ADD COLUMN strategy_bucket TEXT")
+        conn.commit()
+        logger.info("v4.1 마이그레이션: signal_type 컬럼 추가")
+
     conn.close()
     logger.info("pado.db 초기화 완료")
 
@@ -249,16 +296,20 @@ def save_scan_result(row: dict) -> int | None:
                (scan_date,code,name,grade,confidence,action,
                 chart_state,flow_state,chart_score,volume_score,
                 material_score,market_score,theme_match,synergy,
-                reject_reason,payload,created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                reject_reason,signal_type,recommended_hold_days,
+                strategy_bucket,payload,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (row["scan_date"], row["code"], row.get("name"),
              row["grade"], row.get("confidence"), row.get("action"),
              row.get("chart_state"), row.get("flow_state"),
              row.get("chart_score"), row.get("volume_score"),
              row.get("material_score"), row.get("market_score"),
              row.get("theme_match", 0), row.get("synergy", 0),
-             row.get("reject_reason"), _encode(row) if row else None,
-             _now()),
+             row.get("reject_reason"),
+             row.get("signal_type", "score_only"),
+             row.get("recommended_hold_days", "D+3~5"),
+             row.get("strategy_bucket", "pullback"),
+             _encode(row) if row else None, _now()),
         )
         conn.commit()
         return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -598,3 +649,210 @@ def expire_cb_watch(max_days: int = 10) -> int:
     expired = result.rowcount
     conn.close()
     return expired
+
+
+# ─────────────────────────────────────────────
+# 성과 추적 (performance_tracker.py용)
+# ─────────────────────────────────────────────
+
+def iter_screen_results() -> list[dict]:
+    """CB 스크린 결과 전체 순회. payload에서 date, top(종목), skipped 등 추출."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT run_date, payload FROM cb_screen_runs ORDER BY run_date"
+    ).fetchall()
+    conn.close()
+
+    results = []
+    for row in rows:
+        payload = _decode(row["payload"])
+        if payload is None:
+            continue
+        data = {"date": row["run_date"]}
+        if isinstance(payload, dict):
+            data["top"] = [
+                {**s, "price": s.get("price", s.get("close", 0)),
+                 "rank": i + 1, "score": s.get("score", 0)}
+                for i, s in enumerate(payload.get("stocks", []))
+            ]
+            data["skipped"] = payload.get("skipped", False)
+        results.append(data)
+    return results
+
+
+def get_buy_picks(pick_date: str) -> dict | None:
+    """특정 날짜의 매수 후보 (CB 스크린 결과 기반)."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT payload FROM cb_screen_runs WHERE run_date=?", (pick_date,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    payload = _decode(row["payload"])
+    if not payload or not isinstance(payload, dict):
+        return None
+    picks = [
+        {**s, "current_price": s.get("price", s.get("close", 0))}
+        for s in payload.get("stocks", [])
+    ]
+    return {"picks": picks}
+
+
+def list_buy_pick_dates(desc: bool = True) -> list[str]:
+    """매수 후보가 저장된 날짜 목록."""
+    order = "DESC" if desc else "ASC"
+    conn = _connect()
+    rows = conn.execute(
+        f"SELECT run_date FROM cb_screen_runs ORDER BY run_date {order}"
+    ).fetchall()
+    conn.close()
+    return [r["run_date"] for r in rows]
+
+
+def save_buy_pick_outcomes(records: list[dict]) -> int:
+    """성과 추적 결과를 performance 테이블에 저장."""
+    if not records:
+        return 0
+    conn = _connect()
+    saved = 0
+    for rec in records:
+        try:
+            conn.execute(
+                """INSERT OR REPLACE INTO performance
+                   (code, name, source, signal_date, grade,
+                    track_day, track_date, entry_price, current_price,
+                    return_pct, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    rec.get("code", ""),
+                    rec.get("name", ""),
+                    rec.get("signal_type", "cb_screen"),
+                    rec.get("pick_date", rec.get("signal_date", "")),
+                    rec.get("conviction", ""),
+                    rec.get("track_day", 0),
+                    rec.get("track_date", ""),
+                    rec.get("buy_price", 0),
+                    rec.get("track_price", 0),
+                    rec.get("return_pct", 0),
+                    _now(),
+                ),
+            )
+            saved += 1
+        except Exception as e:
+            logger.debug(f"save_buy_pick_outcome 실패 {rec.get('code')}: {e}")
+    conn.commit()
+    conn.close()
+    return saved
+
+
+def update_pick_snapshot_returns(records: list[dict]) -> None:
+    """기존 performance 레코드의 수익률 갱신 (최신 OHLCV 기반 재계산 시)."""
+    if not records:
+        return
+    conn = _connect()
+    for rec in records:
+        try:
+            conn.execute(
+                """UPDATE performance SET current_price=?, return_pct=?, updated_at=?
+                   WHERE code=? AND signal_date=? AND track_day=?""",
+                (
+                    rec.get("track_price", 0),
+                    rec.get("return_pct", 0),
+                    _now(),
+                    rec.get("code", ""),
+                    rec.get("pick_date", rec.get("signal_date", "")),
+                    rec.get("track_day", 0),
+                ),
+            )
+        except Exception:
+            pass
+    conn.commit()
+    conn.close()
+
+
+# ─────────────────────────────────────────────
+# v5: 눌림목 시그널 + 3차 검증 결과 저장
+# ─────────────────────────────────────────────
+
+def save_pullback_signal(signal_date: str, hit: dict, verdict: dict) -> bool:
+    """눌림목 시그널 + 3차 검증 결과를 DB에 저장 (승률 분석용).
+
+    Args:
+        signal_date: 시그널 발생일 (YYYY-MM-DD)
+        hit: check_pullbacks() 결과 dict
+        verdict: _verify_pullback() 결과 {"grade": ..., "reasons": [...]}
+    """
+    conn = _connect()
+    try:
+        conn.execute(
+            """INSERT OR REPLACE INTO pullback_signals
+               (signal_date, code, name, d_plus, explosion_date, explosion_ratio,
+                vol_remain_pct, signal_strength, ma_touch, is_bearish,
+                entry_price, stop_loss, target_price,
+                verdict, verify_reasons)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                signal_date,
+                hit.get("code", ""),
+                hit.get("name", ""),
+                hit.get("d_plus", 0),
+                hit.get("explosion_date", ""),
+                hit.get("explosion_ratio", 0),
+                hit.get("vol_ratio_pct", 0),
+                hit.get("signal_strength", 0),
+                hit.get("ma_touch", ""),
+                1 if "음봉" in hit.get("note", "") else 0,
+                hit.get("entry_price", 0),
+                hit.get("stop_loss", 0),
+                hit.get("target_price", 0),
+                verdict.get("grade", ""),
+                " | ".join(verdict.get("reasons", [])),
+            ),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.debug(f"save_pullback_signal 실패: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def get_pullback_signals(days: int = 30) -> list[dict]:
+    """최근 N일간 눌림목 시그널 조회 (승률 분석용)."""
+    conn = _connect()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """SELECT * FROM pullback_signals
+           WHERE signal_date >= date('now', ? || ' days', 'localtime')
+           ORDER BY signal_date DESC, signal_strength DESC""",
+        (f"-{days}",),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_pullback_returns(code: str, signal_date: str,
+                            d1: float = None, d2: float = None,
+                            d3: float = None, d5: float = None):
+    """눌림목 시그널의 D+N 수익률 업데이트 (성과 추적용)."""
+    conn = _connect()
+    updates = []
+    params = []
+    if d1 is not None:
+        updates.append("d1_return = ?"); params.append(d1)
+    if d2 is not None:
+        updates.append("d2_return = ?"); params.append(d2)
+    if d3 is not None:
+        updates.append("d3_return = ?"); params.append(d3)
+    if d5 is not None:
+        updates.append("d5_return = ?"); params.append(d5)
+    if updates:
+        params.extend([code, signal_date])
+        conn.execute(
+            f"UPDATE pullback_signals SET {', '.join(updates)} WHERE code=? AND signal_date=?",
+            params,
+        )
+        conn.commit()
+    conn.close()

@@ -233,23 +233,38 @@ class VolumeEngine:
     # ─────────────────────────────────────
 
     def _check_supply(self, code: str) -> dict:
-        """ka10045 기관 + ka10014 공매도 → 35점."""
+        """ka10059 기관/외인 + ka10014 공매도 → 35점."""
         import time
         score = 0
         reasons = []
         inst_foreign = False
         short_ratio = 0.0
 
+        # ── 1) 기관/외인 수급 (ka10059) ──
         try:
-            # 기관/외인 매매 (ka10045 또는 유사)
             time.sleep(API_SLEEP_KIWOOM)
-            # TODO: self.api.get_investor_trend(code) 구현 후 연동
-            # 임시: 중립 처리
+            trends = self.api.get_investor_trend(code, days=5) if self.api else []
+            if trends:
+                foreign_sum = sum(t.get("foreign", 0) for t in trends)
+                inst_sum = sum(t.get("institution", 0) for t in trends)
+
+                if foreign_sum > 0 and inst_sum > 0:
+                    score += 15; inst_foreign = True
+                    reasons.append(f"외인+기관 순매수 +15")
+                elif foreign_sum > 0:
+                    score += 8
+                    reasons.append(f"외인 순매수 +8")
+                elif inst_sum > 0:
+                    score += 6
+                    reasons.append(f"기관 순매수 +6")
+                elif foreign_sum < 0 and inst_sum < 0:
+                    score -= 10
+                    reasons.append(f"외인+기관 순매도 -10")
         except Exception as e:
             logger.debug(f"수급 API 실패 {code}: {e}")
 
+        # ── 2) 공매도 (ka10014) ──
         try:
-            # 공매도 (ka10014)
             time.sleep(API_SLEEP_KIWOOM)
             shorts = self.api.get_short_selling(code, days=5) if self.api else []
             if shorts:
@@ -263,7 +278,7 @@ class VolumeEngine:
             logger.debug(f"공매도 조회 실패 {code}: {e}")
 
         return {"score": max(0, min(score, 35)), "inst_foreign_5d": inst_foreign,
-                "short_ratio": short_ratio, "reasons": reasons}
+                "short_ratio": short_ratio, "reasons": reasons[:3]}
 
     def _load_ohlcv(self, code: str) -> pd.DataFrame | None:
         # v2: 캐시 우선, 없으면 파일 직접 로드

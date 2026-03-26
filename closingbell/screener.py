@@ -114,9 +114,16 @@ class CBScreener:
             if any(kw in name for kw in CB_ETF_KEYWORDS):
                 continue
 
-            # 우선주 필터 (이름 끝 "우", "우B", "우C")
-            if name.endswith("우") or name.endswith("우B") or name.endswith("우C"):
-                continue
+            # 우선주: config 플래그로 제어
+            is_preferred = name.endswith("우") or name.endswith("우B") or name.endswith("우C")
+            if is_preferred:
+                try:
+                    from config import ALLOW_PREFERRED_EXECUTION
+                    if not ALLOW_PREFERRED_EXECUTION:
+                        continue
+                except ImportError:
+                    continue
+                s["is_preferred"] = True
 
             # stock_map에서 이름/섹터 보완
             info = self.stock_map.get(s["code"])
@@ -142,6 +149,15 @@ class CBScreener:
         df = self._load_ohlcv(code)
         if df is None or len(df) < 33:
             return None
+
+        # ── 장중 실시간 시세 병합 ──
+        live_quote = {}
+        if self.api:
+            try:
+                live_quote = self.api.get_current_price(code)
+                df = self._merge_live_quote(df, live_quote)
+            except Exception as e:
+                logger.debug(f"실시간 시세 병합 실패 {code}: {e}")
 
         score = 0.0
         reasons = []
@@ -194,6 +210,15 @@ class CBScreener:
         if rsi > CB_OVERHEAT_RSI:
             score -= 10; reasons.append(f"과열 RSI>{CB_OVERHEAT_RSI}")
 
+        # 거래대금 보정 (시뮬: 2026년 기준 500~1500억 최적, 2016 100~300억의 5.44배)
+        trading_value = stock.get("trading_value", 0)
+        if 50_000_000_000 <= trading_value <= 150_000_000_000:
+            score += 4; reasons.append("거래대금 최적구간")
+        elif trading_value >= 500_000_000_000:
+            score -= 5; reasons.append("거래대금 과열")
+        elif trading_value >= 150_000_000_000:
+            score -= 3; reasons.append("거래대금 높음")
+
         score = max(0, min(score, 110))
         info = self.stock_map.get(code)
         name = info.name if info else stock.get("name", code)
@@ -203,10 +228,29 @@ class CBScreener:
             "score": round(score, 1), "rsi": round(rsi, 1),
             "alignment": "정배열" if ma8 > ma33 else "혼합",
             "pool_type": stock.get("pool_type", "unknown"),
+            "trading_value": trading_value,
             "reasons": reasons, "note": "",
+            "signal_type": "score_only",
         }
 
     # ─── 헬퍼 ───
+
+    def _merge_live_quote(self, df: pd.DataFrame, quote: dict) -> pd.DataFrame:
+        """장중 실시간 시세를 마지막 봉에 덮어쓰기."""
+        if not quote or not quote.get("price"):
+            return df
+        df = df.copy()
+        idx = df.index[-1]
+        df.at[idx, "close"] = float(quote["price"])
+        if quote.get("open"):
+            df.at[idx, "open"] = float(quote["open"])
+        if quote.get("high"):
+            df.at[idx, "high"] = float(quote["high"])
+        if quote.get("low"):
+            df.at[idx, "low"] = float(quote["low"])
+        if quote.get("volume"):
+            df.at[idx, "volume"] = int(quote["volume"])
+        return df
 
     def _calc_rsi(self, df, period=14):
         import numpy as np

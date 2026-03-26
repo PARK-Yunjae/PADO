@@ -72,6 +72,7 @@ PERFORMANCE_DIR.mkdir(parents=True, exist_ok=True)
 
 DART_CORP_MAP      = APP_DATA_DIR / "dart_corp_map.json"
 KRX_HOLIDAYS       = REFERENCE_DIR / "krx_holidays.json"
+KRX_HOLIDAYS_PATH  = KRX_HOLIDAYS  # trading_calendar.py 호환
 MARKET_CALENDAR    = REFERENCE_DIR / "market_calendar.json"
 SAFETY_BLOCKLIST   = REFERENCE_DIR / "safety_blocklist.json"
 
@@ -94,8 +95,8 @@ GEMINI_MODEL         = _env("GEMINI_MODEL", "gemini-2.5-flash-lite")
 # ─────────────────────────────────────────────
 
 DISCORD_WEBHOOK      = _env("DISCORD_WEBHOOK", "")
-DISCORD_WEBHOOK_CB   = DISCORD_WEBHOOK
-DISCORD_WEBHOOK_PADO = DISCORD_WEBHOOK
+DISCORD_WEBHOOK_CB   = _env("DISCORD_WEBHOOK_CB", DISCORD_WEBHOOK)
+DISCORD_WEBHOOK_PADO = _env("DISCORD_WEBHOOK_PADO", DISCORD_WEBHOOK)
 
 # ─────────────────────────────────────────────
 # API 호출 제한
@@ -107,7 +108,7 @@ API_SLEEP_NAVER      = _env("API_SLEEP_NAVER", 0.2, float)
 API_SLEEP_GEMINI     = _env("API_SLEEP_GEMINI", 1.0, float)
 API_TIMEOUT          = _env("API_TIMEOUT", 10, int)
 API_MAX_RETRY        = _env("API_MAX_RETRY", 2, int)
-MAX_MATERIAL_EVAL    = _env("MAX_MATERIAL_EVAL", 25, int)
+MAX_MATERIAL_EVAL    = _env("MAX_MATERIAL_EVAL", 60, int)  # v5: 25→60
 
 # ─────────────────────────────────────────────
 # 스캔 필터
@@ -136,20 +137,21 @@ CB_OVERHEAT_RSI      = _env("CB_OVERHEAT_RSI", 75.0, float)
 CB_UNIVERSE_TOP_N    = _env("CB_UNIVERSE_TOP_N", 150, int)
 CB_MIN_PRICE         = _env("CB_MIN_PRICE", 1000, int)
 CB_MAX_PRICE         = _env("CB_MAX_PRICE", 150000, int)
-CB_ETF_KEYWORDS      = ["ETF", "ETN", "KODEX", "TIGER", "KBSTAR", "ARIRANG",
+CB_ETF_KEYWORDS      = ["ETF", "ETN", "KODEX", "TIGER", "KBSTAR", "ARIRANG","HANARO", "SOL", "스팩", "SPAC", "리츠"]
 
+# 우선주 정책 (연구 모드: 포함+태그, 실전 모드: 제외)
+ALLOW_PREFERRED_RESEARCH  = _env_bool("ALLOW_PREFERRED_RESEARCH", True)
+ALLOW_PREFERRED_EXECUTION = _env_bool("ALLOW_PREFERRED_EXECUTION", False)
 
 # 코넥스/스팩 제외 (2,661종목→2,547보통주+114우선주, 백테스트 검증)
 EXCLUDED_MARKETS     = {"KONEX"}
-                        "HANARO", "SOL", "스팩", "SPAC", "리츠"]
-
 # ─────────────────────────────────────────────
 # 재차거시 threshold / 가중치
 # ─────────────────────────────────────────────
 
 JCGS_PASS = {
     "chart":    _env("JCGS_PASS_CHART", 40, int),
-    "volume":   _env("JCGS_PASS_VOLUME", 25, int),    # v2: 35→25 (ka10045 미구현)
+    "volume":   _env("JCGS_PASS_VOLUME", 30, int),    # v4.1: 25→30 (ka10059 연동 완료)
     "material": _env("JCGS_PASS_MATERIAL", 50, int),
     "market":   _env("JCGS_PASS_MARKET", 40, int),
 }

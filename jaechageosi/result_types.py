@@ -83,3 +83,7 @@ class IntersectionResult:
     market: MarketResult
     theme_match_bonus: int = 0
     synergy_bonus: int = 0
+    # v4.1: 시그널 분류
+    signal_type: str = "score_only"             # wave_plus_score / rsi_reversal / score_only
+    recommended_hold_days: str = "D+3~5"        # D+5 / D+15~20 / D+3~5
+    strategy_bucket: str = "pullback"           # wave / hold / pullback

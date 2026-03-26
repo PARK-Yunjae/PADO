@@ -63,6 +63,7 @@ def _build_channel_bar(c: int, v: int, m: int, mk: int, bonus: int, conf: int) -
 # ─────────────────────────────────────────────
 
 def format_cb_pick(picks: list[dict], market_note: str = "") -> dict:
+    """⚠️ DEPRECATED — v5에서 format_midday_check()으로 교체됨."""
     desc = f"시황: {market_note}\n" if market_note else ""
     fields_list = []
     for i, p in enumerate(picks[:3], 1):
@@ -110,7 +111,19 @@ def format_cb_status(watching: list[dict], today_top5: list[dict]) -> dict:
             rsi = s.get("rsi", 0)
             pool = s.get("pool_type", "")
             pool_tag = " [C]" if pool == "core" else ""
-            lines.append(f"  {i}. {name} {score}점 RSI {rsi:.0f}{pool_tag}")
+
+            # v4.1: 이유 2개 노출
+            reasons = s.get("reasons", [])
+            if isinstance(reasons, str):
+                import ast
+                try: reasons = ast.literal_eval(reasons)
+                except: reasons = [reasons] if reasons else []
+            reason_str = " · ".join(reasons[:2]) if reasons else ""
+
+            line = f"  {i}. {name} {score}점 RSI {rsi:.0f}{pool_tag}"
+            if reason_str:
+                line += f"\n     └ {reason_str}"
+            lines.append(line)
         fields_list.append(field(
             f"📊 오늘 TOP5 (감시 등록)",
             "\n".join(lines),
@@ -223,8 +236,19 @@ def format_morning_scan(data: dict, market=None) -> dict:
         if bonus_str:
             body += f"\n{bonus_str}"
 
+        # v4.1: signal_type 태그
+        sig = r.get("signal_type", "score_only")
+        sig_kr = {
+            "wave_plus_score": "⚡파동+점수",
+            "rsi_reversal": "🔄RSI반전",
+            "score_only": "📊점수",
+        }.get(sig, "📊기본")
+        hold = r.get("recommended_hold_days", "")
+        if sig != "score_only":
+            body += f"\n🏷️ {sig_kr}" + (f" | {hold}" if hold else "")
+
         fields_list.append(field(
-            f"{icon} {grade}등급 {name} ({code}) — 확신도 {conf}",
+            f"{icon} {grade}등급 [{sig_kr}] {name} ({code}) — 확신도 {conf}",
             body,
         ))
 
@@ -252,48 +276,43 @@ def format_morning_scan(data: dict, market=None) -> dict:
 
 def format_midday_check(hits: list[dict]) -> dict:
     fields_list = []
-    for h in hits[:3]:
+    for h in hits[:5]:
         name = h.get("name", "?")
         code = h.get("code", "")
-        grade = h.get("grade", "?")
         price = h.get("current_price", 0)
-        support = h.get("support_line", 0)
-        vol_ratio = h.get("vol_ratio_pct", 0)
         entry = h.get("entry_price", 0)
         stop = h.get("stop_loss", 0)
         target = h.get("target_price", 0)
-        warning = h.get("warning", "")
 
-        # 거래량 상태 한글화
-        if vol_ratio <= 20:
-            vol_label = f"📉 거래 극히 적음 ({vol_ratio:.0f}%)"
-        elif vol_ratio <= 50:
-            vol_label = f"📊 거래 적음 ({vol_ratio:.0f}%)"
-        else:
-            vol_label = f"📈 거래 보통 ({vol_ratio:.0f}%)"
+        # 유목민 시그널 정보
+        signal = h.get("signal", "")
+        d_plus = h.get("d_plus", 0)
+        exp_date = h.get("explosion_date", "")
+        exp_ratio = h.get("explosion_ratio", 0)
+        ma_touch = h.get("ma_touch", "")
+        vol_remain = h.get("vol_ratio_pct", 0)
 
-        # 지지선과 현재가 관계
-        gap = (price - support) / support * 100 if support > 0 else 0
-        if gap <= 1:
-            support_label = "✅ 지지선 터치"
-        elif gap <= 3:
-            support_label = "🔸 지지선 근접"
-        else:
-            support_label = f"↕️ 지지선 {gap:.1f}% 위"
+        # 3차 검증 결과 (있으면)
+        verdict = h.get("verdict", "")
+        verdict_icon = {"PASS": "📌", "WARN": "👀", "REJECT": "❌"}.get(verdict, "")
 
-        # 손익비 계산
+        # 손익비
+        rr_label = ""
         if entry and stop and target and entry > stop:
             risk = entry - stop
             reward = target - entry
             rr = reward / risk if risk > 0 else 0
             rr_label = f"손익비 1:{rr:.1f}" if rr > 0 else ""
-        else:
-            rr_label = ""
 
         txt = (
             f"💰 현재가 **{price:,.0f}원**\n"
-            f"{support_label} (지지: {support:,.0f}원)\n"
-            f"{vol_label}\n"
+            f"📊 폭발일 {exp_date} ({exp_ratio}배) → D+{d_plus}\n"
+            f"📉 거래량 잔존 **{vol_remain:.0f}%**\n"
+            f"{signal}\n"
+        )
+        if ma_touch:
+            txt += f"📐 {ma_touch} 터치\n"
+        txt += (
             f"─────────────\n"
             f"📌 진입: {entry:,.0f}원\n"
             f"🔴 손절: {stop:,.0f}원\n"
@@ -301,13 +320,16 @@ def format_midday_check(hits: list[dict]) -> dict:
         )
         if rr_label:
             txt += f" ({rr_label})"
-        if warning:
-            txt += f"\n⚠️ {warning}"
 
-        fields_list.append(field(
-            f"🎯 {name} ({code}) — {grade}등급",
-            txt,
-        ))
+        # 3차 검증 이유 (있으면)
+        verify_reasons = h.get("verify_reasons", [])
+        if verify_reasons:
+            txt += "\n─────────────\n"
+            txt += "\n".join(verify_reasons[:4])
 
-    return embed("📍 눌림목 진입 포착", "", COLOR_YELLOW, fields_list,
-                 footer="키움 현재가 API 기준")
+        title = f"{verdict_icon} {name} ({code}) — D+{d_plus}" if verdict_icon else f"🎯 {name} ({code}) — D+{d_plus}"
+
+        fields_list.append(field(title, txt))
+
+    return embed("🎯 ClosingBell 매수 추천", "1차 감시 → 2차 눌림목 → 3차 재차거시", COLOR_YELLOW, fields_list,
+                 footer="유목민 거래량법 + 재차거시 검증")

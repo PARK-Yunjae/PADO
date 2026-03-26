@@ -38,37 +38,63 @@ logger = setup_logging().getChild("news_intel")
 # API 키 불필요, 호출 제한 없음, 무료
 # 단점: summary에 기사 본문 없음 (HTML 링크만)
 GNEWS_KO_QUERIES = {
-    "market":    ["코스피", "코스닥", "증시 급등", "상한가 종목"],
+    "market":    ["코스피", "코스닥", "증시 급등", "상한가 종목", "거래대금 역대",
+                  "외국인 매수", "기관 매수", "프로그램 매매"],
     "sector":    ["반도체 HBM", "2차전지 배터리", "바이오 신약", "AI 인공지능",
                   "방산 수출", "원전 SMR", "로봇 휴머노이드", "조선 수주",
-                  "건설 인프라", "게임 신작"],
+                  "건설 인프라", "게임 신작", "자동차 전기차", "화학 소재",
+                  "엔터 K-POP", "금융 보험", "통신 5G", "우주항공 위성"],
     "macro":     ["금리 인하", "환율 원달러", "국제유가", "무역수지 수출",
-                  "경기침체"],
-    "political": ["대선 후보", "국회 법안", "규제 완화",
-                  "미중 관세", "중동 전쟁"],
-    "social":    ["부동산 아파트", "소비자물가", "전력 에너지"],
+                  "경기침체", "생산자물가", "소비자물가 CPI", "고용지표",
+                  "한국은행 기준금리"],
+    "political": ["대선 후보", "국회 법안", "규제 완화", "정책 발표",
+                  "미중 관세", "중동 전쟁", "트럼프 관세", "북한 미사일",
+                  "대통령 긴급", "탄핵 정국"],
+    "corporate": ["공시 상장폐지", "횡령 배임", "CB 전환사채", "유상증자 결정",
+                  "자사주 매입", "대주주 지분 변동", "경영권 분쟁"],
+    "social":    ["부동산 아파트", "전력 에너지", "태양광 풍력",
+                  "수소경제", "탄소중립"],
 }
 
 GNEWS_EN_QUERIES = {
-    "global": ["semiconductor market", "NVIDIA earnings", "Tesla battery",
-               "Federal Reserve rate", "oil price Middle East",
-               "trade war tariff", "AI chip export"],
+    "us_politics": ["Trump tariff", "Trump executive order", "US China trade",
+                    "US sanctions", "White House economy", "Congress bill",
+                    "Trump Korea", "trade war escalation"],
+    "fed_macro":   ["Federal Reserve rate", "US inflation CPI", "US jobs report",
+                    "Treasury yields", "US GDP growth", "recession risk",
+                    "unemployment claims", "consumer confidence"],
+    "geopolitics": ["Middle East conflict", "Taiwan strait", "Russia Ukraine",
+                    "OPEC oil output", "Iran nuclear", "North Korea missile",
+                    "Red Sea shipping", "China military"],
+    "tech_semi":   ["NVIDIA earnings", "semiconductor export", "AI chip",
+                    "TSMC foundry", "Samsung HBM", "Apple supply chain",
+                    "AMD Intel", "memory chip demand", "AI datacenter"],
+    "markets":     ["S&P 500 rally", "Nasdaq futures", "VIX volatility",
+                    "dollar index DXY", "Bitcoin crypto", "emerging markets",
+                    "Japan Nikkei", "Europe DAX", "bond yield surge"],
+    "commodities": ["oil price crude", "gold price surge", "copper demand",
+                    "lithium battery", "natural gas Europe"],
 }
 
 # ── 네이버: 정밀 수집 (본문 snippet 포함, Gemini 분석용) ──
 # Google RSS에 없는 것 = 기사 본문. 핵심 키워드만 소수 정밀.
 # 10개 × 10건 = 100건, API 10콜 (일 25,000 한도 대비 여유)
 NAVER_PRECISION_QUERIES = [
-    "반도체",       # 테마 대장, snippet에서 구체적 계약/수주 확인
+    "반도체",           # 테마 대장
     "2차전지",
     "바이오 임상",
     "AI 인공지능",
     "방산 수주",
-    "코스피 급등",   # 시장 전체 맥락
-    "금리 통화정책",  # 거시
-    "대선 정책",     # 정치
+    "코스피 급등",       # 시장 전체 맥락
+    "금리 통화정책",      # 거시
+    "대선 정책",         # 정치
     "원전 SMR",
     "조선 해운",
+    "로봇 자동화",       # v5 추가
+    "게임 신작 출시",
+    "트럼프 관세",       # 해외 이슈 국내 반응
+    "공매도 과열",       # 수급
+    "상한가 테마",       # 주도주 탐색
 ]
 
 # 불용어 (제목에서 제거할 더미 단어)
@@ -87,6 +113,21 @@ STOPWORDS_KO = {
     "맞은", "담은", "사들였는데", "수익률은", "코스피보다", "깨졌다",
     "돌파", "마이너스", "플러스", "상승", "하락", "급등", "급락",
     "글로벌", "시장", "투자", "가능", "예상", "발표", "증가", "감소",
+    # v4.1: 부상 키워드에서 발견된 잡음
+    "보유한", "기대감에", "회복으로", "수요에", "대응하고",
+    "확대에", "가능성에", "영향으로", "방침에", "변동에",
+    "나타나며", "기록하며", "보이면서", "나오면서", "전해지면서",
+    "것으로", "까지", "부터", "에서", "으로", "에게", "처럼",
+    "코스피", "코스닥", "종목", "주가", "거래",
+    "전문가", "애널리스트", "증권사", "리서치",
+    "지속", "유지", "강화", "확대", "추진", "계획", "검토", "논의",
+    "중단", "재개", "변경", "조정", "완료", "마감",
+    # v5: 추가 일반 단어
+    "결정", "발생", "진행", "예정", "실시", "실행", "시행", "개시",
+    "선정", "선발", "도입", "출범", "체결", "합의", "승인", "허가",
+    "대상", "기준", "목표", "규모", "수준", "현재", "최근", "전일",
+    "매매", "매수", "매도", "거래량", "시총", "영업", "분기",
+    "위원회", "기획", "정부", "행정", "산업", "분야", "대한",
 }
 STOPWORDS_EN = {
     "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
@@ -97,10 +138,33 @@ STOPWORDS_EN = {
     "his", "her", "their", "our", "said", "says", "also", "new", "more",
     "how", "what", "when", "where", "who", "why", "which", "than", "not",
     "about", "after", "before", "into", "over", "just", "like", "up",
-    # v3: 테스트 노이즈
+    # 미디어/출처
     "according", "report", "reports", "reuters", "bloomberg", "cnbc",
     "year", "week", "month", "today", "first",
-    "times", "post", "journal", "review",
+    "times", "post", "journal", "review", "associated", "press",
+    # URL/RSS 잔해
+    "com", "www", "http", "https", "html", "news", "article", "articles",
+    "net", "org", "rss", "feed", "google", "naver", "daum",
+    # 일반 동사/부사/전치사
+    "says", "told", "via", "per", "still", "now", "get", "got", "make",
+    "most", "some", "other", "many", "much", "well", "back", "down",
+    "out", "all", "been", "being", "then", "here", "there", "very",
+    "its", "two", "three", "one", "last", "next", "each", "both",
+    "amid", "despite", "warns", "set", "sets", "plan", "plans",
+    "take", "takes", "move", "moves", "push", "sees", "face",
+    "keep", "call", "calls", "hit", "hits", "eyes", "deal",
+    # 단독 출현 시 무의미한 지명/일반명사
+    "north", "south", "east", "west", "european", "american", "asian",
+    "iran", "iraq", "china", "korea", "japan", "india", "europe",
+    "oil", "gold", "gas", "energy", "trade", "economy",
+    "state", "major", "key", "top", "big", "large", "early",
+    "rate", "rates", "tax", "debt", "war", "crisis", "risk",
+    # 금융 일반
+    "global", "market", "markets", "stock", "stocks", "share", "shares",
+    "index", "data", "growth", "rise", "fall", "high", "low",
+    "company", "companies", "investors", "investor", "trading",
+    "billion", "million", "percent", "price", "prices",
+    "bank", "fund", "funds", "bond", "bonds", "rally", "drop",
 }
 
 # Google RSS URL 패턴 노이즈 (활성 단어에서 제거)
@@ -309,8 +373,8 @@ def _extract_ko_words(text: str) -> list[str]:
         if w not in STOPWORDS_KO and len(w) >= 2:
             words.append(w)
 
-    # 3) 숫자+단위 (1조, 100억, 30% 등)
-    nums = re.findall(r"\d+(?:\.\d+)?[조억만%달러원]", text)
+    # 3) 숫자+단위 (1조, 100억 등) — 단독 퍼센트는 노이즈라 제외
+    nums = re.findall(r"\d+(?:\.\d+)?[조억만달러원]", text)
     words.extend(nums)
 
     # 중복 제거 (순서 유지)
@@ -449,6 +513,22 @@ def detect_emerging_topics(date: str, lookback: int = 7) -> list[dict]:
                     "avg": round(avg_past, 1), "delta": round(delta, 1),
                     "titles": word_titles.get(word, []),
                 })
+
+    # v4.1: 최종 후처리 — 잡음 제거
+    def _is_noise(word: str) -> bool:
+        if re.match(r"^\d+%?$", word):        # 순수 숫자/퍼센트
+            return True
+        if len(word) <= 1:                      # 1글자
+            return True
+        if word in STOPWORDS_KO:                # 불용어 재체크
+            return True
+        # 2글자 한글 중 조사/어미형
+        if re.match(r"^[가-힣]{2}$", word):
+            if word.endswith(("에", "은", "는", "이", "가", "를", "의", "도", "로")):
+                return True
+        return False
+
+    emerging = [e for e in emerging if not _is_noise(e["word"])]
 
     # 델타 크기순 정렬
     emerging.sort(key=lambda x: x["today"], reverse=True)
